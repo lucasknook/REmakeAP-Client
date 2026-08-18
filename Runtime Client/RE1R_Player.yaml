@@ -1,0 +1,8 @@
+name: RE1R_Player
+game: Resident Evil 1 Remake
+
+Resident Evil 1 Remake:
+  progression_balancing: 50
+  accessibility: items
+  character: jill
+  difficulty: normal
