@@ -1,0 +1,38 @@
+# Local config
+config.ini
+
+# VS user-specific stuff
+.vs/
+*.suo
+*.user
+*.VC.db
+*.VC.VC.opendb
+
+# VS builds
+[Dd]ebug/
+[Rr]elease/
+x86/
+x64/
+
+# DLL Build Intermediates
+*.obj
+*.pch
+*.idb
+*.ilk
+*.tlog
+*.lastbuildstate
+
+# Linker and debugging output
+*.pdb
+*.exp
+*.lib
+
+# Python files
+__pycache__/
+*.py[cod]
+
+# Debugging output
+*.log
+logs/
+temp/
+tmp/
