@@ -13,6 +13,8 @@ using std::unordered_map;
 static const unordered_map<string, vector<string>> functionDictionary = {
 	//Events
 	{"repeat", {"messageToCopy"}},
+	{"readPlayerState", {}},
+	{"deathLinkReceived", {"source", "cause"}},
 
 	//Responses
 	{"handshake", {"version", "title"}}

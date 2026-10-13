@@ -1,6 +1,10 @@
 # Local config
 config.ini
 
+#VSC and idea stuff
+.vscode/
+.idea/
+
 # VS user-specific stuff
 .vs/
 *.suo

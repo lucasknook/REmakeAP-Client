@@ -29,7 +29,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
@@ -148,6 +148,7 @@
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="functionDictionary.cpp" />
     <ClCompile Include="pendingRequests.cpp" />
+    <ClCompile Include="game\player.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="dinput8.def" />
@@ -155,6 +156,7 @@
   <ItemGroup>
     <ClInclude Include="functionDictionary.h" />
     <ClInclude Include="pendingRequests.h" />
+    <ClInclude Include="game\player.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
