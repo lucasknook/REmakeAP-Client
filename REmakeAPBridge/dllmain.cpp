@@ -3,9 +3,11 @@
 #include <Windows.h>
 #include <process.h>
 #include <cstdint>
+#include <cstdio>
 #include <atomic>
 #include <mutex>
 #include "functionDictionary.h"
+#include "game/player.h"
 #include "pendingRequests.h"
 #include "external/nlohmann/json.hpp"
 
@@ -49,6 +51,8 @@ namespace {
     std::atomic<State> state{ DISCONNECTED };
     std::atomic<uint64_t> requestIdCounter{ 1 };
 	std::mutex sendMutex;
+    // Suppresses the local-death event caused by applying an incoming DeathLink.
+    std::atomic<bool> suppressNextLocalDeath{ false };
 }
 
 //Declare Methods
@@ -63,6 +67,9 @@ void InitiateDisconnection();
 uint64_t GenerateRequestId();
 void Handshake(string version, string title);
 void RepeatMessage(string messageToCopy);
+void ReadPlayerState();
+void TriggerDeathLinkReceived(string source, string cause);
+unsigned int __stdcall PlayerStateMonitorThread(LPVOID parameter);
 
 
 unsigned int __stdcall ModThread(LPVOID parameter) {
@@ -186,7 +193,17 @@ void ProcessCommand(json command) {
             }
             //Event Commands
             if (eventType == "repeat") {
-				RepeatMessage(command["args"]["messageToCopy"]);
+                RepeatMessage(command["args"]["messageToCopy"]);
+            }
+            else if (eventType == "readPlayerState") {
+                ReadPlayerState();
+            }
+            else if (eventType == "deathLinkReceived") {
+                if (!command["args"]["source"].is_string() || !command["args"]["cause"].is_string()) {
+                    SendErrorToClient(MALFORMEDMESSAGE);
+                    return;
+                }
+                TriggerDeathLinkReceived(command["args"]["source"].get<string>(), command["args"]["cause"].get<string>());
             }
         }
         //Request Messages
@@ -339,6 +356,20 @@ void Handshake(string version, string title) {
 		};
         SendJsonMessage(confirmation);
         state = CONNECTED;
+        HANDLE monitorThread = reinterpret_cast<HANDLE>(
+            _beginthreadex(
+                nullptr,
+                0,
+                PlayerStateMonitorThread,
+                nullptr,
+                0,
+                nullptr
+            )
+            );
+
+        if (monitorThread != nullptr) {
+            CloseHandle(monitorThread);
+        }
 	}
 }
 
@@ -354,6 +385,158 @@ void RepeatMessage(string messageToCopy) {
         }
     };
     SendJsonMessage(printMessage);
+}
+
+// Apply an incoming Archipelago DeathLink by setting the tested player-state byte to 4.
+// The monitor suppresses the localDeath event caused by this write to avoid an echo.
+void TriggerDeathLinkReceived(string source, string cause) {
+    uint8_t currentState = 0;
+    uintptr_t stateAddress = 0;
+
+    if (!Player::TryReadPlayerState(currentState, stateAddress)) {
+        json message = {
+            {"messageType", EVENTMESSAGE},
+            {"eventType", "print"},
+            {"args", {{"messageToCopy", "Incoming DeathLink could not be applied: player-state address is unreadable."}}}
+        };
+        SendJsonMessage(message);
+        return;
+    }
+
+    if (currentState == 4) {
+        json message = {
+            {"messageType", EVENTMESSAGE},
+            {"eventType", "print"},
+            {"args", {{"messageToCopy", "Incoming DeathLink received, but the player is already in the death state."}}}
+        };
+        SendJsonMessage(message);
+        return;
+    }
+
+    // Arm suppression before writing so the monitor cannot report this as a local death.
+    suppressNextLocalDeath.store(true);
+
+    uintptr_t writtenAddress = 0;
+    if (!Player::TryWritePlayerState(4, writtenAddress)) {
+        suppressNextLocalDeath.store(false);
+        json message = {
+            {"messageType", EVENTMESSAGE},
+            {"eventType", "print"},
+            {"args", {{"messageToCopy", "Incoming DeathLink failed: could not write the player-state byte."}}}
+        };
+        SendJsonMessage(message);
+        return;
+    }
+
+    string detail = "Incoming DeathLink from " + source + " applied.";
+    if (!cause.empty()) {
+        detail += " Cause: " + cause;
+    }
+    json message = {
+        {"messageType", EVENTMESSAGE},
+        {"eventType", "print"},
+        {"args", {{"messageToCopy", detail}}}
+    };
+    SendJsonMessage(message);
+}
+
+// Read-only diagnostic for the candidate RE1 player-state address.
+// This does not modify game memory.
+void ReadPlayerState() {
+    uint8_t playerState = 0;
+    uintptr_t candidateAddress = 0;
+
+    if (!Player::TryReadPlayerState(playerState, candidateAddress)) {
+        json printMessage = {
+            {"messageType", EVENTMESSAGE},
+            {"eventType", "print"},
+            {"args", {{"messageToCopy", "Player-state probe failed: candidate address was not readable."}}}
+        };
+        SendJsonMessage(printMessage);
+        return;
+    }
+
+    json printMessage = {
+        {"messageType", EVENTMESSAGE},
+        {"eventType", "print"},
+        {"args", {{"messageToCopy", "Player-state probe: value=" + std::to_string(static_cast<unsigned int>(playerState)) +
+            ", address=0x" + [] (uintptr_t value) {
+                char buffer[2 * sizeof(uintptr_t) + 1]{};
+                sprintf_s(buffer, "%llX", static_cast<unsigned long long>(value));
+                return string(buffer);
+            }(candidateAddress)}}}
+    };
+    SendJsonMessage(printMessage);
+}
+
+
+unsigned int __stdcall PlayerStateMonitorThread(LPVOID parameter) {
+    bool hasPreviousState = false;
+    uint8_t previousState = 0;
+
+    while (state.load() == CONNECTED) {
+        uint8_t currentState = 0;
+        uintptr_t stateAddress = 0;
+
+        if (Player::TryReadPlayerState(currentState, stateAddress)) {
+            if (!hasPreviousState || currentState != previousState) {
+                // If the first sample already sees state 4, it may be an incoming
+                // DeathLink applied before the monitor's first poll. Clear suppression
+                // because this initial sample will not emit a localDeath event.
+                if (!hasPreviousState && currentState == 4) {
+                    suppressNextLocalDeath.exchange(false);
+                }
+
+                // Keep the existing state-change diagnostic.
+                json message = {
+                    {"messageType", EVENTMESSAGE},
+                    {"eventType", "print"},
+                    {"args", {
+                        {"messageToCopy",
+                            "Player state changed: " +
+                            std::to_string(
+                                static_cast<unsigned int>(currentState))}
+                    }}
+                };
+
+                SendJsonMessage(message);
+
+                // Notify the Python client when a new death is detected.
+                if (hasPreviousState &&
+                    currentState == 4 &&
+                    previousState != 4) {
+
+                    if (suppressNextLocalDeath.exchange(false)) {
+                        json suppressedMessage = {
+                            {"messageType", EVENTMESSAGE},
+                            {"eventType", "print"},
+                            {"args", {
+                                {"messageToCopy", "Incoming DeathLink caused this death; local DeathLink echo suppressed."}
+                            }}
+                        };
+                        SendJsonMessage(suppressedMessage);
+                    }
+                    else {
+                        json deathMessage = {
+                            {"messageType", EVENTMESSAGE},
+                            {"eventType", "localDeath"},
+                            {"args", {
+                                {"messageToCopy", "LOCAL_DEATH"}
+                            }}
+                        };
+                        SendJsonMessage(deathMessage);
+                    }
+                }
+
+                previousState = currentState;
+                hasPreviousState = true;
+            }
+        }
+
+        Sleep(100);
+    }
+
+    return 0;
 }
 
 // PROXY CODE
